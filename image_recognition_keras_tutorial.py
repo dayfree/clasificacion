@@ -1,125 +1,69 @@
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
+# importing libraries
+from keras.preprocessing.image import ImageDataGenerator
+from keras.models import Sequential
+from keras.layers import Conv2D, MaxPooling2D
+from keras.layers import Activation, Dropout, Flatten, Dense
+from keras import backend as K
 
-image_size = (32, 32)
+
+img_width, img_height = 76, 76
+
+train_data_dir = 'train'
+validation_data_dir = 'test'
+nb_train_samples = 608
+nb_validation_samples = 263
+epochs = 19
 batch_size = 32
 
-train_ds = tf.keras.preprocessing.image_dataset_from_directory(
-    "samples",
-    validation_split=0.2,
-    subset="training",
-    seed=1337,
-    image_size=image_size,
-    batch_size=batch_size,
-)
-val_ds = tf.keras.preprocessing.image_dataset_from_directory(
-    "samples",
-    validation_split=0.2,
-    subset="validation",
-    seed=1337,
-    image_size=image_size,
-    batch_size=batch_size,
-)
+if K.image_data_format() == 'channels_first':
+	input_shape = (3, img_width, img_height)
+else:
+	input_shape = (img_width, img_height, 3)
 
-import matplotlib.pyplot as plt
+model = Sequential()
+model.add(Conv2D(32, (2, 2), input_shape = input_shape))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size =(2, 2)))
 
-plt.figure(figsize=(10, 10))
-for images, labels in train_ds.take(1):
-    for i in range(9):
-        ax = plt.subplot(3, 3, i + 1)
-        plt.imshow(images[i].numpy().astype("uint8"))
-        plt.title(int(labels[i]))
-        plt.axis("off")
+model.add(Conv2D(32, (2, 2)))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size =(2, 2)))
 
-data_augmentation = keras.Sequential(
-    [
-        layers.experimental.preprocessing.RandomFlip("horizontal"),
-        layers.experimental.preprocessing.RandomRotation(0.1),
-    ]
-)
+model.add(Conv2D(64, (2, 2)))
+model.add(Activation('relu'))
+model.add(MaxPooling2D(pool_size =(2, 2)))
 
-plt.figure(figsize=(10, 10))
-for images, _ in train_ds.take(1):
-    for i in range(9):
-        augmented_images = data_augmentation(images)
-        ax = plt.subplot(3, 3, i + 1)
-        plt.imshow(augmented_images[0].numpy().astype("uint8"))
-        plt.axis("off")
+model.add(Flatten())
+model.add(Dense(64))
+model.add(Activation('relu'))
+model.add(Dropout(0.5))
+model.add(Dense(1))
+model.add(Activation('sigmoid'))
 
-augmented_train_ds = train_ds.map(
-  lambda x, y: (data_augmentation(x, training=True), y))
+model.compile(loss ='binary_crossentropy',
+					optimizer ='rmsprop',
+				metrics =['accuracy'])
 
-train_ds = train_ds.prefetch(buffer_size=32)
-val_ds = val_ds.prefetch(buffer_size=32)
+train_datagen = ImageDataGenerator(
+				rescale = 1. / 255,
+				shear_range = 0.2,
+				zoom_range = 0.2,
+			horizontal_flip = True)
 
-def make_model(input_shape, num_classes):
-    inputs = keras.Input(shape=input_shape)
-    # Image augmentation block
-    x = data_augmentation(inputs)
+test_datagen = ImageDataGenerator(rescale = 1. / 255)
 
-    # Entry block
-    x = layers.experimental.preprocessing.Rescaling(1.0 / 255)(x)
-    x = layers.Conv2D(32, 3, strides=2, padding="same")(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation("relu")(x)
+train_generator = train_datagen.flow_from_directory(train_data_dir,
+							target_size =(img_width, img_height),
+					batch_size = batch_size, class_mode ='binary')
 
-    x = layers.Conv2D(64, 3, padding="same")(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation("relu")(x)
+validation_generator = test_datagen.flow_from_directory(
+									validation_data_dir,
+				target_size =(img_width, img_height),
+		batch_size = batch_size, class_mode ='binary')
 
-    previous_block_activation = x  # Set aside residual
+model.fit_generator(train_generator,
+	steps_per_epoch = nb_train_samples // batch_size,
+	epochs = epochs, validation_data = validation_generator,
+	validation_steps = nb_validation_samples // batch_size)
 
-    for size in [128, 256, 512, 728]:
-        x = layers.Activation("relu")(x)
-        x = layers.SeparableConv2D(size, 3, padding="same")(x)
-        x = layers.BatchNormalization()(x)
-
-        x = layers.Activation("relu")(x)
-        x = layers.SeparableConv2D(size, 3, padding="same")(x)
-        x = layers.BatchNormalization()(x)
-
-        x = layers.MaxPooling2D(3, strides=2, padding="same")(x)
-
-        # Project residual
-        residual = layers.Conv2D(size, 1, strides=2, padding="same")(
-            previous_block_activation
-        )
-        x = layers.add([x, residual])  # Add back residual
-        previous_block_activation = x  # Set aside next residual
-
-    x = layers.SeparableConv2D(1024, 3, padding="same")(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation("relu")(x)
-
-    x = layers.GlobalAveragePooling2D()(x)
-    if num_classes == 2:
-        activation = "sigmoid"
-        units = 1
-    else:
-        activation = "softmax"
-        units = num_classes
-
-    x = layers.Dropout(0.5)(x)
-    outputs = layers.Dense(units, activation=activation)(x)
-    return keras.Model(inputs, outputs)
-
-
-model = make_model(input_shape=image_size + (3,), num_classes=2)
-keras.utils.plot_model(model, show_shapes=True)
-
-epochs = 50
-
-callbacks = [
-    keras.callbacks.ModelCheckpoint("save_at_{epoch}.h5"),
-]
-model.compile(
-    optimizer=keras.optimizers.Adam(1e-3),
-    loss="binary_crossentropy",
-    metrics=["accuracy"],
-)
-model.fit(
-    train_ds, epochs=epochs, callbacks=callbacks, validation_data=val_ds,
-)
-
-
+model.save_weights('model_saved.h5')
